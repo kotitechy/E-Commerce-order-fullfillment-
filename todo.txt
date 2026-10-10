@@ -1,0 +1,162 @@
+Part-1
+    1. high level design
+    2. design architecture
+    3. Raml write up
+Part-2
+a. infrastructure & external services setup
+    1. database (local)
+        1. local mysql instance (orders_db)
+        2. schema initialization (orders, order_items, inventory_stock, invoices, processed_messages)
+        3. seed initial inventory data (SKU-ELEC-1188, SKU-ELEC-2041)
+    2. file storage (local)
+        1. configure local desktop paths for generated invoices
+        2. configure dynamic date-based archive sub-directories
+    3. messaging queues (cloudamqp/lavinmq)
+        1. provision remote amqp instance
+        2. create order.fulfilment.queue
+        3. create order.notify.queue
+        4. create order.fulfilment.queue.DLQ (Dead Letter Queue)
+    4. notification service
+        1. gmail smtp configuration for automated dispatch
+
+b. project configuration & properties
+    1. dependencies & modules
+        1. amqp, database, file, and email connectors
+        2. apikit module for raml routing
+        3. secure properties module (updated to v1.3.2 for java 17 compatibility)
+    2. property files (properties.yaml)
+        1. map dynamic connection parameters (db, amqp, smtp)
+        2. enforce yaml string formatting for numeric values (ports)
+        3. parameterize secure decryption key
+
+c. api design & routing
+    1. raml specification
+        1. define datatypes and json schemas for order intake
+        2. define post /api/v1/orders and get /api/v1/orders/{id}
+    2. application architecture
+        1. monolithic pipeline (e-commerce-pipeline.xml)
+        2. apikit router integration for automatic payload validation
+
+d. core business logic (flows)
+    1. synchronous intake (post orders)
+        1. receive validated payload and generate uuid
+        2. insert order into db with ACCEPTED status
+        3. publish message to order.fulfilment.queue
+        4. return 202 accepted to client immediately
+    2. status polling (get orders)
+        1. retrieve current order and line-item status from db
+    3. asynchronous fulfilment consumer
+        1. listen to order.fulfilment.queue
+        2. check idempotency (prevent duplicate processing via processed_messages table)
+        3. execute conditional inventory decrement
+        4. apply backorder logic if stock is insufficient
+        5. generate invoice plaintext document using dataweave
+        6. write temporary, final, and archived files to local system
+        7. update order status to FULFILLED or BACKORDERED
+        8. publish routing payload to order.notify.queue
+        9. route failures to DLQ on error
+    4. asynchronous notification consumer
+        1. listen to order.notify.queue
+        2. read generated invoice file from local path
+        3. compile email body using dataweave
+        4. send email with .txt attachment via smtp
+        5. update db notified_at timestamp
+
+e. testing & debugging phase
+    1. compilation resolution
+        1. fix amqp direct-to-queue routing key xml syntax
+        2. fix amqp tls context configuration (useTls="true")
+    2. postman end-to-end execution
+        1. verify 202 synchronous acceptance
+        2. verify database persistence and status updates
+        3. verify file creation in correct local directories
+        4. verify email delivery to inbox with correct attachments
+        5. test idempotency with duplicate X-Request-Id headers
+        6. test backorder logic with high-quantity requests
+
+Part-3
+
+a. centralise-> migration
+    1. db
+        1. remote rds
+    2. files
+        1. remote s3 
+    3. update smtp as per guidelines
+        1. dummy gmail
+
+b. property files 
+    1. update credentials
+    2. dynamic - already done
+    3. 2 seperate files dev and prod 
+    4. secure through algorithm 
+
+
+c. Separation of concerns 
+    1. Api lead architecture
+        1. api kit router
+        2. Physically divide the Code
+    2. appropriate logs
+        1. with in the flows
+    3. generated logs to another folder for each session 
+        1. typically in the 
+    4. seperate global error handling file
+        or all -ve scenarios
+d. policies
+    1. applying policies 
+        1. raml- client-id enforcement policy
+    2. publishing raml to anypoint platform
+    2. auto  discovery
+        1. api.id in property file
+        2. config in code
+    
+
+e. testing
+    1. postman-> collections
+        1. sucess
+        2. failure
+        3. invalid
+        4. errors
+    2. -ve scenarios
+        1. server has no end points  
+        2. server issues
+    3. update -ve Scneraios 
+    4. note all cases
+        1. save them as post man collection group 
+            1. use it further for munit and debugging as it make easy  
+
+
+
+f. munit
+    1. debugging & munit test cases
+    2. ensure munit testcases >=80%
+
+g. clarity
+    1. if they have asked for any ui for testing or postman
+        1. test with 
+    2. any dashboard for tracking or retrieveing the logs
+
+h. hackathon persspective 
+    a. one final check & test regarding architecture and to score maximum as they focus on scoring in modular format 20% for this 25% for that need to check wheather to score as maximum as possible what we need to do
+    b. calculate and increasing chances of scoring at the break point before exporting the project
+
+Part-4
+i. export the project
+    1. jar file
+    2. test it in local server
+
+j. cloudhub deployment
+    1. one main root user 
+    2. many users deploy same project
+
+k. api management
+    1. apply policies
+    2. other parameters defined in the documentation
+
+l. final check 
+    1. everything goes fine 
+    2. prepare other formal docs and prepare for explanation
+
+Part-5
+    preparation for the presentation
+     
+

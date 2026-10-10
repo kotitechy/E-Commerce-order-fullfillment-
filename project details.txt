@@ -1,0 +1,34 @@
+1. experience
+2. process
+3. system 
+
+cognizant.mulesoft@gmail.com
+S3@bucket
+
+AWS
+1. user- mulesoft
+2. password - S3@bucket
+
+system
+1. amqp
+2. central db - gcp db 
+3. smtp server 
+4. lavinmq
+
+experience
+1. raml
+2. postman
+
+process
+1. sucess
+2. failure
+3. error handling
+4. notifications
+
+
+So now we have successfully completed the 30% of the project after documentation so now comes the actual part in the story\
+I've defined all the secure property files that are required for the projects itself so now we need to connect them and implement the process Process layer step by step so I am able to do that but it takes lot of effort and its lot of time to do so as an ai model you have the capability to do the things very quickly and sort the things very fastly I request you to go through the database file I have shared with you as well as all the required files there are certain technical standards that were provided in the document as well as the tips In the document itself so you need to go through them you need to use the api key router and create the flow references for Process layer Rather than Direct flows Also on the high level We will focus our experience layer later on the part now we will focus on the process layer and make sure its works fine very fine and if possible So in this case what are the things we will discuss one by one in the plan so Or you have gone all through the documents right now right so you tell me what are the things that should be implemented in the process layer we have successfully completed with the system defining and like connecting or what do you say We have successfully established the system layer now its the time to define the process layer so what are the steps and what are the things that should be Included in the process layer you need to tell me in format of a plan 
+
+So you have understand successfully what to do and what not to do in and you need also to go with the details like data view expression validation Right from the getting the data from the customer as well as checking into the database tables and Validating and pushing them to the amqpq and updating to the user through notifications if not possible use the routers or choice routers or if else conditions to To make a waiting list or The second queue that they have mentioned in the document Also maintain the dead letter queue if possible it's it's required dead data queue is also required go according to the standards that they have mentioned in the documentation and the names of the flows must be followed because its instrict order from the hackathon instruction team so all these should be particularly followed from the documents itself everything should be implemented you understand the flow rate now tell the exact thing what you are going to do rather than direct implementation 
+
+So tell me yes or no in one shot in one gunshot are you able to write the whole process logic process layer logic in 1 gunshot and then making no more changes just adjusting with the Connexion itself I have already given the properties file you know the exact properties I will make sure that They the properties will be changed dynamically if any I will make sure you get updated through that tell me if tell me now only if any property is missing I will update it right now and tell the exact percentage and ratio of success and failure if you start implementing the project right now in within one gunshot no other changes 
