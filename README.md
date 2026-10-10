@@ -1,5 +1,6 @@
 # E-Commerce-order-fullfillment-
 Cognizant Mulesoft Hackathon
+**PROBLEMS FACED AND APPROACH**
 **SMTP Authentication Rejection:** The notification consumer repeatedly failed with a `535 5.7.8 BadCredentials` error during email dispatch. **Tackled by:** Identifying and correcting a domain typo (`@gamil.com` to `@gmail.com`) in the `properties.yaml` file to restore the secure Gmail SMTP connection.
 
 **AMQP TLS Connection Refusals:** The LavinMQ cloud instance rejected initial listener connections on port 5671. **Tackled by:** Explicitly enabling the TLS context (`useTls="true"`) in the MuleSoft AMQP connector configuration to satisfy the strict secure port requirement.
