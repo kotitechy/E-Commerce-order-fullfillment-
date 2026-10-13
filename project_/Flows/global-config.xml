@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:secure-properties="http://www.mulesoft.org/schema/mule/secure-properties"
+      xmlns:s3="http://www.mulesoft.org/schema/mule/s3"
+      xmlns:api-gateway="http://www.mulesoft.org/schema/mule/api-gateway"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:tls="http://www.mulesoft.org/schema/mule/tls"
+      xmlns:file="http://www.mulesoft.org/schema/mule/file"
+      xmlns:email="http://www.mulesoft.org/schema/mule/email"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:amqp="http://www.mulesoft.org/schema/mule/amqp"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/tls http://www.mulesoft.org/schema/mule/tls/current/mule-tls.xsd
+        http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+        http://www.mulesoft.org/schema/mule/email http://www.mulesoft.org/schema/mule/email/current/mule-email.xsd
+        http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+        http://www.mulesoft.org/schema/mule/amqp http://www.mulesoft.org/schema/mule/amqp/current/mule-amqp.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/api-gateway http://www.mulesoft.org/schema/mule/api-gateway/current/mule-api-gateway.xsd
+        http://www.mulesoft.org/schema/mule/s3 http://www.mulesoft.org/schema/mule/s3/current/mule-s3.xsd
+        http://www.mulesoft.org/schema/mule/secure-properties http://www.mulesoft.org/schema/mule/secure-properties/current/mule-secure-properties.xsd">
+
+    <!-- Configuration Properties for Normal Values -->
+    <configuration-properties file="properties.yaml" doc:name="Configuration properties" />
+
+    <!-- Configuration Properties for the Permanent Encryption Key -->
+    <configuration-properties file="config.yaml" doc:name="Config Properties for Master Key" />
+
+    <!-- Secure Properties Configuration -->
+    <secure-properties:config name="Secure_Properties_Config" file="properties.yaml" key="hackathon1234567" doc:name="Secure Properties Config" />
+
+    <!-- Central Default Error Handler Reference -->
+    <configuration defaultErrorHandler-ref="main-global-error-handler" doc:name="Configuration" />
+
+    <!-- Shared Connectors -->
+    <http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config">
+        <http:listener-connection host="${http.host}" port="${http.port}" />
+    </http:listener-config>
+
+    <db:config name="Database_Config" doc:name="Database Config">
+        <db:my-sql-connection host="${db.host}" port="${db.port}" user="${db.user}" password="${secure::db.password}" database="${dbname}" />
+    </db:config>
+
+    <amqp:config name="AMQP_Config" doc:name="AMQP Config">
+        <amqp:connection host="${AMQP_Config.host}" port="${AMQP_Config.port}" virtualHost="${AMQP_Config.vhost}" username="${AMQP_Config.user}" password="${secure::AMQP_Config.password}" useTls="true">
+            <tls:context>
+                <tls:trust-store insecure="true" />
+            </tls:context>
+        </amqp:connection>
+    </amqp:config>
+
+    <file:config name="File_Config" doc:name="File Config">
+        <file:connection workingDir="${file.invoice_path}" />
+    </file:config>
+
+    <email:smtp-config name="Email_SMTP" doc:name="Email SMTP">
+        <email:smtp-connection host="${smtp.host}" port="${smtp.port}" user="${smtp.user}" password="${secure::smtp.password}">
+            <email:properties>
+                <email:property key="mail.smtp.starttls.enable" value="true" />
+                <email:property key="mail.smtp.auth" value="true" />
+            </email:properties>
+        </email:smtp-connection>
+    </email:smtp-config>
+
+    <api-gateway:autodiscovery apiId="21228506" ignoreBasePath="true" doc:name="API Autodiscovery" doc:id="c6c778aa-6a47-48c2-a811-d480aad0f1c2" flowRef="post-orders-intake-flow" />
+
+</mule>

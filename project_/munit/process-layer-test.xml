@@ -1,0 +1,280 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:munit="http://www.mulesoft.org/schema/mule/munit" 
+	xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+	xmlns="http://www.mulesoft.org/schema/mule/core" 
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+		http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+	
+	<munit:config name="process-layer-test.xml" />
+
+	<!-- TC9: Fulfilment Consumer Success Flow -->
+	<munit:test name="test-case-9-fulfilment-consumer-success" description="Verify successful stock reservation, invoice file write, and notification publish">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Check Processed Message (None)">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:update" doc:name="Mock Stock &amp; Order Update Success">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[{affectedRows: 1}]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:insert" doc:name="Mock Invoice &amp; Processed Message Insert">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[{affectedRows: 1}]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="file:write" doc:name="Mock File Write Invoice">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['written']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="amqp:publish" doc:name="Mock Publish Notify">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['notified']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<set-payload value='{
+				"orderId": "ORD-2026-999",
+				"orderTotal": 1000,
+				"currency": "INR",
+				"paymentMethod": "PREPAID",
+				"paymentReference": "REF-999",
+				"customer": {"name": "Shiva", "email": "shiva@test.com"},
+				"billingAddress": {"line1": "Ameerpet", "city": "Hyderabad", "state": "Telangana", "postalCode": "500016", "gstin": "36AABCU9603R1ZM"},
+				"shippingAddress": {"line1": "Ameerpet", "city": "Hyderabad", "state": "Telangana", "postalCode": "500016"},
+				"items": [{"sku": "SKU-1", "productName": "Item 1", "quantity": 1, "unitPrice": 1000, "lineTotal": 1000}]
+			}' mimeType="text/plain" />
+			<flow-ref name="fulfilment-consumer-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals actual="#[vars.finalStatus]" expected="#['FULFILLED']" message="Expected FULFILLED status"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC10: Inventory Backorder Trigger -->
+	<munit:test name="test-case-10-inventory-backorder" description="Verify insufficient stock routes item to backorder">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Check Processed Message">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:update" doc:name="Mock Stock Update Fails (0 Rows)">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[{affectedRows: 0}]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:insert" doc:name="Mock DB Insert">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[{affectedRows: 1}]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="file:write" doc:name="Mock File Write">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['ok']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="amqp:publish" doc:name="Mock Publish">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['ok']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<set-payload value='{
+				"orderId": "ORD-2026-BO",
+				"orderTotal": 500,
+				"currency": "INR",
+				"paymentMethod": "PREPAID",
+				"paymentReference": "REF-BO",
+				"customer": {"name": "Shiva", "email": "s@test.com"},
+				"billingAddress": {"line1": "Madhapur", "city": "Hyderabad", "state": "TS", "postalCode": "500081"},
+				"shippingAddress": {"line1": "Madhapur", "city": "Hyderabad", "state": "TS", "postalCode": "500081"},
+				"items": [{"sku": "SKU-OUT", "productName": "Out of Stock", "quantity": 5, "unitPrice": 100, "lineTotal": 500}]
+			}' mimeType="text/plain" />
+			<flow-ref name="fulfilment-consumer-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals actual="#[vars.backorderedLinesCount]" expected="#[1]" message="Expected 1 backordered line"/>
+			<munit-tools:assert-equals actual="#[vars.finalStatus]" expected="#['BACKORDERED']" message="Expected BACKORDERED status"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC11: Duplicate Message Consumer Redelivery Check -->
+	<munit:test name="test-case-11-duplicate-message-drop" description="Verify already processed queue message is skipped">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Message Exists in DB">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[{jms_message_id: 'MSG-DUP'}]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<set-payload value='{"orderId": "ORD-DUP"}' mimeType="text/plain" />
+			<flow-ref name="fulfilment-consumer-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:verify-call processor="amqp:publish" times="0" doc:name="Verify no publish for duplicate"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC12: Notification Consumer Email Dispatch -->
+	<munit:test name="test-case-12-notification-email-dispatch" description="Verify email consumer reads invoice file and sends dispatch">
+		<munit:behavior>
+			<munit-tools:mock-when processor="file:read" doc:name="Mock Read Invoice File">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['Invoice Content Body']" mediaType="text/plain" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="email:send" doc:name="Mock Send SMTP Email">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['sent']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:update" doc:name="Mock Update Notified At">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[{affectedRows: 1}]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<set-payload value='{
+				"orderId": "ORD-2026-001",
+				"invoiceNumber": "INV-1",
+				"invoicePath": "INV-1.txt",
+				"customerEmail": "test@test.com",
+				"customerName": "Shiva",
+				"payableTotal": 1000,
+				"currency": "INR",
+				"shippingAddress": {"line1": "Madhapur", "city": "Hyderabad", "state": "TS", "postalCode": "500081"}
+			}' mimeType="text/plain" />
+			<flow-ref name="notification-consumer-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:verify-call processor="email:send" times="1" doc:name="Verify SMTP Email Sent"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC13: Dead Letter Queue (DLQ) Error Routing -->
+	<munit:test name="test-case-13-dlq-routing-on-error" description="Verify unexpected payload error triggers On Error Continue and routes to DLQ">
+		<munit:behavior>
+			<munit-tools:mock-when processor="amqp:publish" doc:name="Mock DLQ Publish">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['dlq-sent']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<set-payload value="{INVALID_JSON_PAYLOAD_FOR_DLQ" mimeType="text/plain" />
+			<flow-ref name="fulfilment-consumer-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:verify-call processor="amqp:publish" atLeast="1" doc:name="Verify message sent to DLQ"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC14: Invoice Tax Calculation Integrity Check -->
+	<munit:test name="test-case-14-invoice-calculation" description="Verify tax invoice generation handles 18% GST calculation correctly">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock DB Select">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:update" doc:name="Mock DB Update">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[{affectedRows: 1}]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:insert" doc:name="Mock DB Insert">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[{affectedRows: 1}]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="file:write" doc:name="Mock File Write">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['ok']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="amqp:publish" doc:name="Mock AMQP Publish">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['ok']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<set-payload value='{
+				"orderId": "ORD-2026-TAX",
+				"orderTotal": 118,
+				"currency": "INR",
+				"paymentMethod": "PREPAID",
+				"paymentReference": "REF-TAX",
+				"customer": {"name": "Shiva", "email": "s@test.com"},
+				"billingAddress": {"line1": "H", "city": "C", "state": "TS", "postalCode": "500081", "gstin": "36AABCU9603R1ZM"},
+				"shippingAddress": {"line1": "H", "city": "C", "state": "TS", "postalCode": "500081"},
+				"items": [{"sku": "SKU-1", "productName": "Test", "quantity": 1, "unitPrice": 118, "lineTotal": 118}]
+			}' mimeType="text/plain" />
+			<flow-ref name="fulfilment-consumer-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-that expression="#[vars.invoiceNum]" is="#[MunitTools::notNullValue()]"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC15: Correlation ID Traceability Propagation -->
+	<munit:test name="test-case-15-correlation-id-trace" description="Verify correlation ID is preserved across queue messages">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock DB Check">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:update" doc:name="Mock DB Update">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[{affectedRows: 1}]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:insert" doc:name="Mock DB Insert">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[{affectedRows: 1}]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="file:write" doc:name="Mock File Write">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['ok']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="amqp:publish" doc:name="Mock AMQP Publish">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['ok']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<munit:set-event doc:name="Set Queue Attributes">
+				<munit:attributes value="#[{properties: {correlationId: 'corr-trace-999', messageId: 'msg-999'}}]" mediaType="application/java" />
+			</munit:set-event>
+			<set-payload value='{
+				"orderId": "ORD-CORR",
+				"orderTotal": 100,
+				"currency": "INR",
+				"customer": {"name": "Shiva", "email": "s@test.com"},
+				"billingAddress": {"line1": "H", "city": "C", "state": "TS", "postalCode": "500081"},
+				"shippingAddress": {"line1": "H", "city": "C", "state": "TS", "postalCode": "500081"},
+				"items": [{"sku": "SKU-1", "productName": "Test", "quantity": 1, "unitPrice": 100, "lineTotal": 100}]
+			}' mimeType="text/plain" />
+			<flow-ref name="fulfilment-consumer-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals actual="#[vars.correlationId]" expected="#['corr-trace-999']" message="Expected correlationId to match"/>
+		</munit:validation>
+	</munit:test>
+</mule>

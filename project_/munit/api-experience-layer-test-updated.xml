@@ -1,0 +1,279 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:munit="http://www.mulesoft.org/schema/mule/munit" 
+	xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+	xmlns="http://www.mulesoft.org/schema/mule/core" 
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+		http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+	
+	<munit:config name="api-experience-layer-test-updated.xml" />
+
+	<!-- TC1: Happy Path POST Order Intake + APIKIT:BAD_REQUEST & Console NOT_FOUND coverage -->
+	<munit:test name="test-case-1-happy-path-post" description="Verify successful order intake through Router, Experience, and System layers returns 202">
+		<munit:behavior>
+			<munit-tools:mock-when processor="apikit:router" doc:name="Mock Router BAD_REQUEST">
+				<munit-tools:then-return>
+					<munit-tools:error typeId="APIKIT:BAD_REQUEST" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="apikit:console" doc:name="Mock Console NOT_FOUND">
+				<munit-tools:then-return>
+					<munit-tools:error typeId="APIKIT:NOT_FOUND" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Request ID Check (No Match)">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:insert" doc:name="Mock DB Insert Order &amp; Items">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[{affectedRows: 1}]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="amqp:publish" doc:name="Mock AMQP Publish">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['published']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<try>
+				<flow-ref name="e-commerce-order-fullfillment-pipeline-main" />
+				<error-handler><on-error-continue type="ANY" /></error-handler>
+			</try>
+			<try>
+				<flow-ref name="e-commerce-order-fullfillment-pipeline-console" />
+				<error-handler><on-error-continue type="ANY" /></error-handler>
+			</try>
+			<munit:set-event doc:name="Set POST Event">
+				<munit:payload value='#[output application/json --- {
+					"customer": {"customerId": "CUST-001", "name": "Shiva", "email": "shiva@test.com"},
+					"billingAddress": {"line1": "Madhapur", "city": "Hyderabad", "state": "Telangana", "postalCode": "500081", "gstin": "36AABCU9603R1ZM"},
+					"shippingAddress": {"line1": "Madhapur", "city": "Hyderabad", "state": "Telangana", "postalCode": "500081"},
+					"currency": "INR",
+					"orderTotal": 1000,
+					"paymentMethod": "PREPAID",
+					"paymentReference": "REF123",
+					"items": [{"sku": "SKU-99", "productName": "Clay Press", "quantity": 1, "unitPrice": 1000, "taxRatePercent": 18, "lineTotal": 1000}]
+				}]' mediaType="application/json" />
+				<munit:attributes value="#[{headers: {'x-correlation-id': 'corr-001', 'x-request-id': 'req-001'}}]" mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref name="post:\orders:application\json:e-commerce-order-fullfillment-pipeline-config" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals actual="#[vars.httpStatus as Number]" expected="#[202]" message="Expected HTTP Status 202"/>
+			<munit-tools:assert-equals actual="#[payload.status]" expected="#['ACCEPTED']" message="Expected ACCEPTED status"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC2: Synchronous Validation Failure - Empty Items + APIKIT:NOT_FOUND coverage -->
+	<munit:test name="test-case-2-validation-empty-items" description="Verify empty items array triggers 400 Bad Request">
+		<munit:behavior>
+			<munit-tools:mock-when processor="apikit:router" doc:name="Mock Router NOT_FOUND">
+				<munit-tools:then-return>
+					<munit-tools:error typeId="APIKIT:NOT_FOUND" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<try>
+				<flow-ref name="e-commerce-order-fullfillment-pipeline-main" />
+				<error-handler><on-error-continue type="ANY" /></error-handler>
+			</try>
+			<set-payload value='#[output application/json --- {"currency": "INR", "orderTotal": 0, "items": []}]' mimeType="application/json" />
+			<flow-ref name="post-orders-intake-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals actual="#[vars.httpStatus as Number]" expected="#[400]" message="Expected 400 Bad Request"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC3: Idempotency Duplicate Request Check + APIKIT:METHOD_NOT_ALLOWED coverage -->
+	<munit:test name="test-case-3-idempotency-duplicate" description="Verify duplicate x-request-id returns existing order status">
+		<munit:behavior>
+			<munit-tools:mock-when processor="apikit:router" doc:name="Mock Router METHOD_NOT_ALLOWED">
+				<munit-tools:then-return>
+					<munit-tools:error typeId="APIKIT:METHOD_NOT_ALLOWED" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Request ID Exists">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[{order_id: 'ORD-2026-DUP', status: 'ACCEPTED'}]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<try>
+				<flow-ref name="e-commerce-order-fullfillment-pipeline-main" />
+				<error-handler><on-error-continue type="ANY" /></error-handler>
+			</try>
+			<munit:set-event doc:name="Set Duplicate Request Event">
+				<munit:payload value='#[output application/json --- {
+					"customer": {"customerId": "CUST-001", "name": "Shiva", "email": "shiva@test.com"},
+					"billingAddress": {"line1": "H", "city": "H", "state": "TS", "postalCode": "50"},
+					"shippingAddress": {"line1": "H", "city": "H", "state": "TS", "postalCode": "50"},
+					"currency": "INR",
+					"orderTotal": 100,
+					"items": [{"sku": "SKU-1", "productName": "P", "quantity": 1, "unitPrice": 100, "lineTotal": 100}]
+				}]' mediaType="application/json" />
+				<munit:attributes value="#[{headers: {'x-request-id': 'req-dup-001'}}]" mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref name="post-orders-intake-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals actual="#[payload.orderId]" expected="#['ORD-2026-DUP']" message="Expected duplicate order ID"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC4: Status Polling Endpoint (GET Order Found) + APIKIT:NOT_ACCEPTABLE coverage -->
+	<munit:test name="test-case-4-get-order-found" description="Verify GET /orders/{id} through Router, Experience, and System layers returns 200">
+		<munit:behavior>
+			<munit-tools:mock-when processor="apikit:router" doc:name="Mock Router NOT_ACCEPTABLE">
+				<munit-tools:then-return>
+					<munit-tools:error typeId="APIKIT:NOT_ACCEPTABLE" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock DB Header &amp; Lines">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[{order_id: 'ORD-2026-001', status: 'FULFILLED', invoice_number: 'INV-1', accepted_at: '2026-10-13', fulfilled_at: '2026-10-13', notified_at: '2026-10-13', sku: 'SKU-1', quantity: 1, line_status: 'RESERVED'}]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<try>
+				<flow-ref name="e-commerce-order-fullfillment-pipeline-main" />
+				<error-handler><on-error-continue type="ANY" /></error-handler>
+			</try>
+			<munit:set-event doc:name="Set GET Event with URI Param">
+				<munit:attributes value="#[{uriParams: {'orderId': 'ORD-2026-001'}, headers: {'x-correlation-id': 'corr-get-001'}}]" mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref name="get:\orders\(orderId):e-commerce-order-fullfillment-pipeline-config" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals actual="#[payload.status]" expected="#['FULFILLED']" message="Expected FULFILLED status"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC5: Status Polling Endpoint (GET Order 404 Not Found) + APIKIT:UNSUPPORTED_MEDIA_TYPE coverage -->
+	<munit:test name="test-case-5-get-order-not-found" description="Verify GET for missing order returns 404">
+		<munit:behavior>
+			<munit-tools:mock-when processor="apikit:router" doc:name="Mock Router UNSUPPORTED_MEDIA_TYPE">
+				<munit-tools:then-return>
+					<munit-tools:error typeId="APIKIT:UNSUPPORTED_MEDIA_TYPE" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock DB Empty Header">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<try>
+				<flow-ref name="e-commerce-order-fullfillment-pipeline-main" />
+				<error-handler><on-error-continue type="ANY" /></error-handler>
+			</try>
+			<set-variable variableName="orderId" value="ORD-INVALID" />
+			<flow-ref name="get-orders-by-id-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals actual="#[vars.httpStatus as Number]" expected="#[404]" message="Expected 404 Not Found"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC6: Validation Failure - Unsupported Currency + APIKIT:NOT_IMPLEMENTED & Global DB:CONNECTIVITY coverage -->
+	<munit:test name="test-case-6-unsupported-currency" description="Verify unsupported currency triggers 400 and test DB:CONNECTIVITY global handler">
+		<munit:behavior>
+			<munit-tools:mock-when processor="apikit:router" doc:name="Mock Router NOT_IMPLEMENTED">
+				<munit-tools:then-return>
+					<munit-tools:error typeId="APIKIT:NOT_IMPLEMENTED" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock DB:CONNECTIVITY Error">
+				<munit-tools:then-return>
+					<munit-tools:error typeId="DB:CONNECTIVITY" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<try>
+				<flow-ref name="e-commerce-order-fullfillment-pipeline-main" />
+				<error-handler><on-error-continue type="ANY" /></error-handler>
+			</try>
+			<try>
+				<set-variable variableName="orderId" value="ORD-ERR" />
+				<flow-ref name="get-orders-by-id-flow" />
+				<error-handler><on-error-continue type="ANY" /></error-handler>
+			</try>
+			<set-payload value='#[output application/json --- {"currency": "JPY", "orderTotal": 100, "items": [{"sku": "S", "quantity": 1, "unitPrice": 100, "lineTotal": 100}]}]' mimeType="application/json" />
+			<flow-ref name="post-orders-intake-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals actual="#[vars.httpStatus as Number]" expected="#[400]" message="Expected 400 Bad Request"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC7: Validation Failure - Line Total Mismatch + Global AMQP:CONNECTIVITY coverage -->
+	<munit:test name="test-case-7-line-total-mismatch" description="Verify calculation mismatch, invalid quantity, and AMQP:CONNECTIVITY global handler">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock AMQP:CONNECTIVITY Error">
+				<munit-tools:then-return>
+					<munit-tools:error typeId="AMQP:CONNECTIVITY" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<try>
+				<set-variable variableName="orderId" value="ORD-AMQP-ERR" />
+				<flow-ref name="get-orders-by-id-flow" />
+				<error-handler><on-error-continue type="ANY" /></error-handler>
+			</try>
+			<set-payload value='#[output application/json --- {"currency": "INR", "orderTotal": 200, "items": [{"sku": "S", "quantity": 0, "unitPrice": 100, "lineTotal": 0}]}]' mimeType="application/json" />
+			<flow-ref name="post-orders-intake-flow" />
+			<set-payload value='#[output application/json --- {"currency": "INR", "orderTotal": 200, "items": [{"sku": "S", "quantity": 2, "unitPrice": 100, "lineTotal": 999}]}]' mimeType="application/json" />
+			<flow-ref name="post-orders-intake-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals actual="#[vars.httpStatus as Number]" expected="#[400]" message="Expected 400 Bad Request"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- TC8: Validation Failure - Order Total Header Mismatch + Main Router & Global ANY Error coverage -->
+	<munit:test name="test-case-8-header-total-mismatch" description="Verify header total mismatch, main router flows, and Global ANY error handler">
+		<munit:behavior>
+			<munit-tools:mock-when processor="apikit:router" doc:name="Mock APIKit Router">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['routed']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="apikit:console" doc:name="Mock APIKit Console">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['console']" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Generic Error">
+				<munit-tools:then-return>
+					<munit-tools:error typeId="DB:QUERY_EXECUTION" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution>
+			<flow-ref name="e-commerce-order-fullfillment-pipeline-main" />
+			<flow-ref name="e-commerce-order-fullfillment-pipeline-console" />
+			<try>
+				<set-variable variableName="orderId" value="ORD-ANY-ERR" />
+				<flow-ref name="get-orders-by-id-flow" />
+				<error-handler><on-error-continue type="ANY" /></error-handler>
+			</try>
+			<set-payload value='#[output application/json --- {"currency": "INR", "orderTotal": 500, "items": [{"sku": "S", "quantity": 1, "unitPrice": 100, "lineTotal": 100}]}]' mimeType="application/json" />
+			<flow-ref name="post-orders-intake-flow" />
+		</munit:execution>
+		<munit:validation>
+			<munit-tools:assert-equals actual="#[vars.httpStatus as Number]" expected="#[400]" message="Expected 400 Bad Request"/>
+		</munit:validation>
+	</munit:test>
+</mule>

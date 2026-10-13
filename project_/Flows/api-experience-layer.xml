@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:amqp="http://www.mulesoft.org/schema/mule/amqp" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd http://www.mulesoft.org/schema/mule/amqp http://www.mulesoft.org/schema/mule/amqp/current/mule-amqp.xsd">
+
+    <flow name="post-orders-intake-flow" doc:name="post-orders-intake-flow">
+        <logger level="INFO" doc:name="Log Layer Entry" message="#['[LAYER: EXPERIENCE] Processing POST | CorrelationId: ' ++ (vars.correlationId default '')]" />
+        
+        <set-variable variableName="requestId" value="#[attributes.headers.'x-request-id' default uuid()]" doc:name="requestId" />
+        <set-variable variableName="incomingPayload" value="#[payload]" doc:name="incomingPayload" />
+
+        <ee:transform doc:name="Validate Business Rules">
+            <ee:message />
+            <ee:variables>
+                <ee:set-variable variableName="validationErrors"><![CDATA[%dw 2.0
+output application/json
+var supportedCurrencies = ["INR", "USD", "EUR"]
+var items = payload.items default []
+var invalidLineTotals = items filter ((item) -> (item.quantity * item.unitPrice) != item.lineTotal)
+var invalidQuantities = items filter ((item) -> item.quantity <= 0 or item.unitPrice < 0)
+var calculatedOrderTotal = sum(items.lineTotal default [0])
+---
+if (isEmpty(items))
+    "Empty order: items array cannot be empty."
+else if (!isEmpty(invalidQuantities))
+    "Invalid item quantity or price: quantity must be > 0 and price >= 0."
+else if (!isEmpty(invalidLineTotals))
+    "Line total mismatch: item lineTotal does not equal quantity * unitPrice."
+else if (!contains(supportedCurrencies, payload.currency))
+    "Unsupported currency: " ++ (payload.currency default "")
+else if (payload.orderTotal != calculatedOrderTotal)
+    "Order total mismatch: header orderTotal does not equal sum of item totals."
+else
+    null]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <choice doc:name="Is Order Valid?">
+            <when expression="#[vars.validationErrors != null]">
+                <set-variable variableName="httpStatus" value="400" doc:name="Status 400" />
+                <ee:transform doc:name="Build 400 Error Response">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ "statusCode": 400, "error": "Bad Request", "message": vars.validationErrors, "correlationId": vars.correlationId }]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+            </when>
+            <otherwise>
+                <flow-ref name="sys-db-check-request-id-subflow" doc:name="sys-db-check-request-id-subflow" />
+                <choice doc:name="Is Repeated Request?">
+                    <when expression="#[!isEmpty(payload)]">
+                        <logger level="INFO" doc:name="Log Idempotent Match" message="#['[IDEMPOTENT HIT] RequestId exists: ' ++ vars.requestId]" />
+                        <ee:transform doc:name="Return Original Order Status">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ "orderId": payload[0].order_id, "status": payload[0].status, "message": "Duplicate request detected.", "statusUrl": "/api/v1/orders/" ++ payload[0].order_id }]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+                    </when>
+                    <otherwise>
+                        <set-variable variableName="orderId" value="#['ORD-2026-' ++ upper(uuid()[0 to 6])]" doc:name="Generate orderId" />
+                        <flow-ref name="sys-db-insert-order-subflow" doc:name="sys-db-insert-order-subflow" />
+                        
+                        <ee:transform doc:name="Prepare Fulfilment Event Message">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ "eventType": "ORDER_ACCEPTED", "eventId": "evt-" ++ uuid(), "correlationId": vars.correlationId, "occurredAt": now(), "orderId": vars.orderId, "customer": vars.incomingPayload.customer, "billingAddress": vars.incomingPayload.billingAddress, "shippingAddress": vars.incomingPayload.shippingAddress, "currency": vars.incomingPayload.currency, "orderTotal": vars.incomingPayload.orderTotal, "paymentMethod": vars.incomingPayload.paymentMethod, "paymentReference": vars.incomingPayload.paymentReference, "items": vars.incomingPayload.items, "attempt": 1 }]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+
+                        <amqp:publish config-ref="AMQP_Config" doc:name="Publish to order.fulfilment.queue">
+                            <amqp:routing-keys><amqp:routing-key value="${queues.fulfillment}"/></amqp:routing-keys>
+                            <amqp:message>
+                                <amqp:body><![CDATA[#[write(payload, "application/json")]]]></amqp:body>
+                                <amqp:properties correlationId="#[vars.correlationId]" messageId="#[uuid()]" />
+                            </amqp:message>
+                        </amqp:publish>
+
+                        <set-variable variableName="httpStatus" value="202" doc:name="Status 202" />
+                        <ee:transform doc:name="Build 202 Accepted Response">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ "orderId": vars.orderId, "status": "ACCEPTED", "acceptedAt": now(), "statusUrl": "/api/v1/orders/" ++ vars.orderId, "message": "Order accepted." }]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+                        <logger level="INFO" doc:name="Log Intake Complete" message="#['[EXPERIENCE SUCCESS] Order ' ++ vars.orderId ++ ' accepted.']" />
+                    </otherwise>
+                </choice>
+            </otherwise>
+        </choice>
+    </flow>
+
+    <flow name="get-orders-by-id-flow" doc:name="get-orders-by-id-flow">
+        <logger level="INFO" doc:name="Log Layer Entry" message="#['[LAYER: EXPERIENCE] Processing GET | CorrelationId: ' ++ (vars.correlationId default '')]" />
+        
+        <flow-ref name="sys-db-get-order-details-subflow" doc:name="sys-db-get-order-details-subflow" />
+
+        <choice doc:name="Does Order Exist?">
+            <when expression="#[isEmpty(payload)]">
+                <set-variable variableName="httpStatus" value="404" doc:name="Status 404" />
+                <ee:transform doc:name="Build 404 Response">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ "statusCode": 404, "error": "Not Found", "message": "Order ID " ++ (vars.orderId default "") ++ " not found." }]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+            </when>
+            <otherwise>
+                <set-variable variableName="orderRecord" value="#[payload[0]]" doc:name="orderRecord" />
+                <flow-ref name="sys-db-get-order-lines-subflow" doc:name="sys-db-get-order-lines-subflow" />
+                <ee:transform doc:name="Build Status Response">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ "orderId": vars.orderRecord.order_id, "status": vars.orderRecord.status, "invoiceNumber": vars.orderRecord.invoice_number, "acceptedAt": vars.orderRecord.accepted_at, "fulfilledAt": vars.orderRecord.fulfilled_at, "notifiedAt": vars.orderRecord.notified_at, "lines": payload map ((line) -> { "sku": line.sku, "quantity": line.quantity, "status": line.line_status }) }]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+            </otherwise>
+        </choice>
+    </flow>
+
+</mule>

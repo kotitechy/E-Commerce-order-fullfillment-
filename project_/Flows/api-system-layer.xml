@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:file="http://www.mulesoft.org/schema/mule/file" xmlns:email="http://www.mulesoft.org/schema/mule/email" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd http://www.mulesoft.org/schema/mule/email http://www.mulesoft.org/schema/mule/email/current/mule-email.xsd http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <sub-flow name="sys-db-check-request-id-subflow" doc:name="sys-db-check-request-id-subflow">
+        <logger level="DEBUG" doc:name="Log System Layer Execution" message="#['[LAYER: SYSTEM] Executing DB Select (Request ID) | CorrelationID: ' ++ (vars.correlationId default '')]" />
+        <db:select config-ref="Database_Config" doc:name="Select Order by Request ID">
+            <db:sql><![CDATA[SELECT order_id, status FROM orders WHERE request_id = :reqId]]></db:sql>
+            <db:input-parameters><![CDATA[#[{'reqId': vars.requestId}]]]></db:input-parameters>
+        </db:select>
+    </sub-flow>
+
+    <sub-flow name="sys-db-insert-order-subflow" doc:name="sys-db-insert-order-subflow">
+        <logger level="DEBUG" doc:name="Log System Layer Execution" message="#['[LAYER: SYSTEM] Executing DB Insert (New Order) | CorrelationID: ' ++ (vars.correlationId default '')]" />
+        <db:insert config-ref="Database_Config" doc:name="Insert Order (ACCEPTED)">
+            <db:sql><![CDATA[
+                INSERT INTO orders (order_id, customer_id, customer_email, currency, order_total, payment_method, payment_ref, status, request_id, correlation_id, accepted_at)
+                VALUES (:orderId, :customerId, :customerEmail, :currency, :orderTotal, :payMethod, :payRef, 'ACCEPTED', :requestId, :correlationId, CURRENT_TIMESTAMP)
+            ]]></db:sql>
+            <db:input-parameters><![CDATA[#[{ 'orderId': vars.orderId, 'customerId': vars.incomingPayload.customer.customerId, 'customerEmail': vars.incomingPayload.customer.email, 'currency': vars.incomingPayload.currency, 'orderTotal': vars.incomingPayload.orderTotal, 'payMethod': vars.incomingPayload.paymentMethod, 'payRef': vars.incomingPayload.paymentReference, 'requestId': vars.requestId, 'correlationId': vars.correlationId }]]]></db:input-parameters>
+        </db:insert>
+        <foreach collection="#[vars.incomingPayload.items]" doc:name="For Each Line Item">
+            <db:insert config-ref="Database_Config" doc:name="Insert order_items">
+                <db:sql><![CDATA[
+                    INSERT INTO order_items (order_id, sku, product_name, quantity, unit_price, tax_rate_percent, line_total, line_status)
+                    VALUES (:orderId, :sku, :name, :qty, :price, :tax, :total, 'PENDING')
+                ]]></db:sql>
+                <db:input-parameters><![CDATA[#[{ 'orderId': vars.orderId, 'sku': payload.sku, 'name': payload.productName, 'qty': payload.quantity, 'price': payload.unitPrice, 'tax': payload.taxRatePercent, 'total': payload.lineTotal }]]]></db:input-parameters>
+            </db:insert>
+        </foreach>
+    </sub-flow>
+
+    <sub-flow name="sys-db-get-order-details-subflow" doc:name="sys-db-get-order-details-subflow">
+        <db:select config-ref="Database_Config" doc:name="Query Order Header">
+            <db:sql><![CDATA[SELECT * FROM orders WHERE order_id = :orderId]]></db:sql>
+            <db:input-parameters><![CDATA[#[{'orderId': vars.orderId}]]]></db:input-parameters>
+        </db:select>
+    </sub-flow>
+
+    <sub-flow name="sys-db-get-order-lines-subflow" doc:name="sys-db-get-order-lines-subflow">
+        <db:select config-ref="Database_Config" doc:name="Query Line Items">
+            <db:sql><![CDATA[SELECT sku, quantity, line_status FROM order_items WHERE order_id = :orderId]]></db:sql>
+            <db:input-parameters><![CDATA[#[{'orderId': vars.orderId}]]]></db:input-parameters>
+        </db:select>
+    </sub-flow>
+
+    <sub-flow name="sys-db-check-processed-message-subflow" doc:name="sys-db-check-processed-message-subflow">
+        <db:select config-ref="Database_Config" doc:name="Check Processed Message">
+            <db:sql><![CDATA[SELECT jms_message_id FROM processed_messages WHERE jms_message_id = :msgId]]></db:sql>
+            <db:input-parameters><![CDATA[#[{'msgId': vars.msgId}]]]></db:input-parameters>
+        </db:select>
+    </sub-flow>
+
+    <sub-flow name="sys-db-reserve-item-subflow" doc:name="sys-db-reserve-item-subflow">
+        <db:update config-ref="Database_Config" doc:name="Conditional Stock Update">
+            <db:sql><![CDATA[
+                UPDATE inventory_stock SET available_qty = available_qty - :qty, reserved_qty = reserved_qty + :qty, updated_at = CURRENT_TIMESTAMP WHERE sku = :sku AND available_qty >= :qty
+            ]]></db:sql>
+            <db:input-parameters><![CDATA[#[{ 'qty': vars.currentItem.quantity, 'sku': vars.currentItem.sku }]]]></db:input-parameters>
+        </db:update>
+    </sub-flow>
+
+    <sub-flow name="sys-db-set-line-reserved-subflow" doc:name="sys-db-set-line-reserved-subflow">
+        <db:update config-ref="Database_Config" doc:name="Update line to RESERVED">
+            <db:sql><![CDATA[UPDATE order_items SET line_status = 'RESERVED', reserved_qty = :qty WHERE order_id = :orderId AND sku = :sku]]></db:sql>
+            <db:input-parameters><![CDATA[#[{ 'qty': vars.currentItem.quantity, 'orderId': vars.orderId, 'sku': vars.currentItem.sku }]]]></db:input-parameters>
+        </db:update>
+    </sub-flow>
+
+    <sub-flow name="sys-db-set-line-backordered-subflow" doc:name="sys-db-set-line-backordered-subflow">
+        <db:update config-ref="Database_Config" doc:name="Update line to BACKORDERED">
+            <db:sql><![CDATA[UPDATE order_items SET line_status = 'BACKORDERED', reserved_qty = 0 WHERE order_id = :orderId AND sku = :sku]]></db:sql>
+            <db:input-parameters><![CDATA[#[{ 'orderId': vars.orderId, 'sku': vars.currentItem.sku }]]]></db:input-parameters>
+        </db:update>
+    </sub-flow>
+
+    <sub-flow name="sys-file-write-invoice-subflow" doc:name="sys-file-write-invoice-subflow">
+        <logger level="DEBUG" doc:name="Log System Layer Execution" message="#['[LAYER: SYSTEM] Executing DB/File Ops (Invoice) | CorrelationID: ' ++ (vars.correlationId default '')]" />
+        <file:write config-ref="File_Config" path="#[vars.invoiceFileName ++ '.tmp']" doc:name="Write temporary invoice" />
+        <file:write config-ref="File_Config" path="#[vars.invoiceFileName]" doc:name="Write final invoice" />
+        <file:write config-ref="File_Config" path="#[vars.archivePath]" createParentDirectories="true" doc:name="Archive dated copy" />
+        <db:insert config-ref="Database_Config" doc:name="Insert Invoice Metadata">
+            <db:sql><![CDATA[
+                INSERT INTO invoices (invoice_number, order_id, invoice_date, taxable_amount, tax_amount, payable_total, file_path, archive_path, generated_at)
+                VALUES (:invNum, :orderId, CURRENT_DATE, :taxable, :tax, :payable, :path, :archive, CURRENT_TIMESTAMP)
+            ]]></db:sql>
+            <db:input-parameters><![CDATA[#[{ 'invNum': vars.invoiceNum, 'orderId': vars.orderId, 'taxable': round((vars.orderData.orderTotal / 1.18) * 100) / 100, 'tax': vars.orderData.orderTotal - (round((vars.orderData.orderTotal / 1.18) * 100) / 100), 'payable': vars.orderData.orderTotal, 'path': vars.invoiceFileName, 'archive': vars.archivePath }]]]></db:input-parameters>
+        </db:insert>
+        <db:update config-ref="Database_Config" doc:name="Update Order to Fulfilled">
+            <db:sql><![CDATA[
+                UPDATE orders SET status = :status, invoice_number = :invNum, fulfilled_at = CURRENT_TIMESTAMP WHERE order_id = :orderId
+            ]]></db:sql>
+            <db:input-parameters><![CDATA[#[{ 'status': vars.finalStatus, 'invNum': vars.invoiceNum, 'orderId': vars.orderId }]]]></db:input-parameters>
+        </db:update>
+        <db:insert config-ref="Database_Config" doc:name="Insert processed_messages">
+            <db:sql><![CDATA[
+                INSERT INTO processed_messages (jms_message_id, consumer_name, order_id, processed_at) VALUES (:msgId, 'fulfilment-consumer', :orderId, CURRENT_TIMESTAMP)
+            ]]></db:sql>
+            <db:input-parameters><![CDATA[#[{ 'msgId': vars.msgId, 'orderId': vars.orderId }]]]></db:input-parameters>
+        </db:insert>
+    </sub-flow>
+
+    <sub-flow name="sys-email-send-dispatch-subflow" doc:name="sys-email-send-dispatch-subflow">
+        <logger level="DEBUG" doc:name="Log System Layer Execution" message="#['[LAYER: SYSTEM] Executing SMTP Email | CorrelationID: ' ++ (vars.correlationId default '')]" />
+        <file:read config-ref="File_Config" path="#[vars.notifyData.invoicePath]" doc:name="Read Generated Invoice" target="invoiceAttachment" />
+        <email:send config-ref="Email_SMTP" fromAddress="${smtp.user}" subject="#['Order ' ++ (vars.orderId default '') ++ ' confirmed - dispatch by 2 days']" doc:name="Send Confirmation Email">
+            <email:to-addresses><email:to-address value="#[vars.notifyData.customerEmail]" /></email:to-addresses>
+            <email:body contentType="text/plain"><email:content><![CDATA[#[payload]]]></email:content></email:body>
+            <email:attachments><![CDATA[#[{ (vars.notifyData.invoiceNumber ++ ".txt"): vars.invoiceAttachment }]]]></email:attachments>
+        </email:send>
+        <db:update config-ref="Database_Config" doc:name="Set notified_at">
+            <db:sql><![CDATA[UPDATE orders SET notified_at = CURRENT_TIMESTAMP WHERE order_id = :orderId]]></db:sql>
+            <db:input-parameters><![CDATA[#[{'orderId': vars.orderId}]]]></db:input-parameters>
+        </db:update>
+    </sub-flow>
+
+</mule>

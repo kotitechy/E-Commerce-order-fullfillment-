@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:amqp="http://www.mulesoft.org/schema/mule/amqp" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/amqp http://www.mulesoft.org/schema/mule/amqp/current/mule-amqp.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <flow name="fulfilment-consumer-flow" doc:name="fulfilment-consumer-flow">
+        <amqp:listener config-ref="AMQP_Config" queueName="${queues.fulfillment}" ackMode="AUTO" numberOfConsumers="1" doc:name="Consume order.fulfilment.queue" />
+        
+        <ee:transform doc:name="Parse Queue Payload">
+            <ee:message><ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+read(payload, "application/json")]]></ee:set-payload></ee:message>
+            <ee:variables>
+                <ee:set-variable variableName="msgId"><![CDATA[%dw 2.0
+output application/java
+---
+(attributes.properties.messageId default uuid()) as String]]></ee:set-variable>
+                <ee:set-variable variableName="correlationId"><![CDATA[%dw 2.0
+output application/java
+---
+(attributes.properties.correlationId default uuid()) as String]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <logger level="DEBUG" doc:name="Log Process Layer Entry" message="#['[LAYER: PROCESS] Fulfilment Consumer Triggered | CorrelationID: ' ++ (vars.correlationId default '')]" />
+
+        <set-variable variableName="orderData" value="#[payload]" doc:name="orderData" />
+        <set-variable variableName="orderId" value="#[payload.orderId as String]" doc:name="orderId" />
+
+        <flow-ref name="sys-db-check-processed-message-subflow" doc:name="sys-db-check-processed-message-subflow" />
+
+        <choice doc:name="Already Processed?">
+            <when expression="#[!isEmpty(payload)]">
+                <logger level="WARN" doc:name="Log Duplicate Redelivery" message="#['[DEDUPLICATION] Message ' ++ (vars.msgId default '') ++ ' already processed.']" />
+            </when>
+            <otherwise>
+                <set-variable variableName="backorderedLinesCount" value="#[0]" doc:name="Init backorder count" />
+
+                <foreach collection="#[vars.orderData.items]" doc:name="Reserve Stock For Each Item">
+                    <set-variable variableName="currentItem" value="#[payload]" doc:name="currentItem" />
+                    <flow-ref name="sys-db-reserve-item-subflow" doc:name="sys-db-reserve-item-subflow" />
+                    <choice doc:name="Did Reservation Succeed?">
+                        <when expression="#[payload.affectedRows &gt; 0]">
+                            <flow-ref name="sys-db-set-line-reserved-subflow" doc:name="sys-db-set-line-reserved-subflow" />
+                        </when>
+                        <otherwise>
+                            <set-variable variableName="backorderedLinesCount" value="#[vars.backorderedLinesCount + 1]" doc:name="Increment backorder count" />
+                            <flow-ref name="sys-db-set-line-backordered-subflow" doc:name="sys-db-set-line-backordered-subflow" />
+                        </otherwise>
+                    </choice>
+                </foreach>
+
+                <set-variable variableName="finalStatus" value="#[if (vars.backorderedLinesCount &gt; 0) 'BACKORDERED' else 'FULFILLED']" doc:name="Set finalStatus" />
+                <set-variable variableName="invoiceNum" value="#['INV-2026-' ++ upper(uuid()[0 to 6])]" doc:name="Generate invoiceNum" />
+                <set-variable variableName="invoiceFileName" value="#[vars.invoiceNum ++ '.txt']" doc:name="invoiceFileName" />
+                <set-variable variableName="archivePath" value="#['archive/' ++ (now() as String {format: 'yyyy-MM-dd'}) ++ '/' ++ vars.invoiceFileName]" doc:name="archivePath" />
+
+                <ee:transform doc:name="Generate Invoice Plaintext">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output text/plain
+var totalAmount = vars.orderData.orderTotal default 0
+var taxableAmount = round((totalAmount / 1.18) * 100) / 100
+var totalTax = totalAmount - taxableAmount
+var halfTax = round((totalTax / 2) * 100) / 100
+---
+"==========================================================\n" ++
+"TAX INVOICE\n" ++
+"==========================================================\n" ++
+"Invoice Number: " ++ vars.invoiceNum ++ "\n" ++
+"Invoice Date:   " ++ (now() as String {format: "dd-MMM-yyyy"}) ++ "\n" ++
+"Order Number:   " ++ vars.orderId ++ "\n" ++
+"Order Date:     " ++ (now() as String {format: "dd-MMM-yyyy"}) ++ "\n\n" ++
+"SELLER:\n" ++
+"NPN Retail Private Limited\n" ++
+"Plot 22, Ambattur Industrial Estate, Chennai 600058\n" ++
+"GSTIN: 33AABCN1234M1Z7\n\n" ++
+"BILL TO:\n" ++
+vars.orderData.customer.name ++ "\n" ++
+vars.orderData.billingAddress.line1 ++ ", " ++ vars.orderData.billingAddress.city ++ ", " ++ vars.orderData.billingAddress.state ++ " " ++ vars.orderData.billingAddress.postalCode ++ "\n" ++
+"GSTIN: " ++ (vars.orderData.billingAddress.gstin default "N/A") ++ "\n\n" ++
+"ITEMS:\n" ++
+"----------------------------------------------------------\n" ++
+((vars.orderData.items map ((item, idx) -> 
+    (idx + 1) ++ ". " ++ item.sku ++ " | " ++ item.productName ++ " | QTY: " ++ item.quantity ++ " | RATE: " ++ item.unitPrice ++ " | TOTAL: " ++ item.lineTotal
+)) joinBy "\n") ++ "\n" ++
+"----------------------------------------------------------\n" ++
+"Taxable Amount: " ++ (taxableAmount as String) ++ "\n" ++
+"CGST 9%:        " ++ (halfTax as String) ++ "\n" ++
+"SGST 9%:        " ++ (halfTax as String) ++ "\n" ++
+"PAYABLE TOTAL:  " ++ (totalAmount as String) ++ "\n" ++
+"Payment:        " ++ (vars.orderData.paymentMethod default "PREPAID") ++ " Ref: " ++ (vars.orderData.paymentReference default "N/A") ++ "\n" ++
+"Status:         PAID\n" ++
+"==========================================================\n"
+]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+
+                <flow-ref name="sys-file-write-invoice-subflow" doc:name="sys-file-write-invoice-subflow" />
+
+                <ee:transform doc:name="Build Notification Payload">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    "eventType": "ORDER_FULFILLED",
+    "correlationId": vars.correlationId,
+    "orderId": vars.orderId,
+    "invoiceNumber": vars.invoiceNum,
+    "invoicePath": vars.invoiceFileName,
+    "customerEmail": vars.orderData.customer.email,
+    "customerName": vars.orderData.customer.name,
+    "backorderedLines": vars.backorderedLinesCount,
+    "payableTotal": vars.orderData.orderTotal,
+    "currency": vars.orderData.currency,
+    "shippingAddress": vars.orderData.shippingAddress,
+    "items": vars.orderData.items
+}]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+
+                <amqp:publish config-ref="AMQP_Config" doc:name="Publish to order.notify.queue">
+                    <amqp:routing-keys><amqp:routing-key value="${queues.notify}"/></amqp:routing-keys>
+                    <amqp:message><amqp:body><![CDATA[#[write(payload, "application/json")]]]></amqp:body><amqp:properties correlationId="#[vars.correlationId]" /></amqp:message>
+                </amqp:publish>
+                <logger level="INFO" doc:name="Log Fulfilment Complete" message="#['[PROCESS SUCCESS] Order ' ++ (vars.orderId default '') ++ ' fulfilled.']" />
+            </otherwise>
+        </choice>
+        <error-handler>
+            <on-error-continue enableNotifications="true" logException="true" doc:name="On Error Continue to DLQ">
+                <logger level="ERROR" doc:name="Log Fulfilment Failure" message="#['[PROCESS ERROR] Routing to DLQ. Error: ' ++ (error.description default '')]" />
+                <amqp:publish config-ref="AMQP_Config" doc:name="Publish to DLQ">
+                    <amqp:routing-keys><amqp:routing-key value="${queues.dlq}"/></amqp:routing-keys>
+                    <amqp:message><amqp:body><![CDATA[#[write({ "failedPayload": vars.orderData default payload, "errorDescription": error.description, "failedAt": now() }, "application/json")]]]></amqp:body></amqp:message>
+                </amqp:publish>
+            </on-error-continue>
+        </error-handler>
+    </flow>
+
+    <flow name="notification-consumer-flow" doc:name="notification-consumer-flow">
+        <amqp:listener config-ref="AMQP_Config" queueName="${queues.notify}" ackMode="AUTO" numberOfConsumers="1" doc:name="Consume order.notify.queue" />
+        <ee:transform doc:name="Parse Notification Payload">
+            <ee:message><ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+read(payload, "application/json")]]></ee:set-payload></ee:message>
+        </ee:transform>
+
+        <set-variable variableName="notifyData" value="#[payload]" doc:name="notifyData" />
+        <set-variable variableName="orderId" value="#[payload.orderId as String]" doc:name="orderId" />
+        <set-variable variableName="correlationId" value="#[attributes.properties.correlationId default uuid()]" doc:name="correlationId" />
+        
+        <logger level="DEBUG" doc:name="Log Process Layer Entry" message="#['[LAYER: PROCESS] Notification Consumer Triggered | CorrelationID: ' ++ (vars.correlationId default '')]" />
+
+        <ee:transform doc:name="Prepare Email Body">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output text/plain
+---
+"Dear " ++ (vars.notifyData.customerName default "Customer") ++ ",\n\n" ++
+"Thank you for your order. We have received your payment and your order is now being prepared for dispatch.\n\n" ++
+"Order Number: " ++ (vars.orderId default "") ++ "\n" ++
+"Invoice Number: " ++ (vars.notifyData.invoiceNumber default "") ++ "\n" ++
+"Payable Total: " ++ (vars.notifyData.currency default "INR") ++ " " ++ (vars.notifyData.payableTotal as String default "0") ++ "\n\n" ++
+"Delivery Address:\n" ++
+(vars.notifyData.shippingAddress.line1 default "") ++ ", " ++ (vars.notifyData.shippingAddress.city default "") ++ "\n\n" ++
+"Your tax invoice is attached to this email.\n\n" ++
+"Regards,\nNPN Retail Customer Care"]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <flow-ref name="sys-email-send-dispatch-subflow" doc:name="sys-email-send-dispatch-subflow" />
+    </flow>
+
+</mule>
